@@ -2,8 +2,12 @@
 /**
  * Plugin Name: WooCommerce Subscriptions Staging Controller
  * Description: Tool to check, fix, and control WooCommerce Subscriptions staging mode
- * Version: 1.2
+ * Version: 1.3
  * Author: Woo Nami
+ * Requires at least: 5.0
+ * Tested up to: 6.6
+ * WC requires at least: 3.0
+ * WC tested up to: 9.0
  */
 
 // Prevent direct access
@@ -31,6 +35,14 @@ class WCS_Staging_Controller {
     }
     
     public function admin_page() {
+        // Check if WooCommerce Subscriptions is active
+        if (!$this->is_wcs_active()) {
+            echo '<div class="wrap"><h1>WooCommerce Subscriptions Staging Controller</h1>';
+            echo '<div class="notice notice-error"><p><strong>Error:</strong> WooCommerce Subscriptions is not active!</p></div>';
+            echo '</div>';
+            return;
+        }
+        
         // Safe way to check if WCS_Staging class exists
         $is_staging = false;
         if (class_exists('WCS_Staging')) {
@@ -135,17 +147,53 @@ class WCS_Staging_Controller {
                     <li><strong>Safety Feature:</strong> Staging mode prevents accidental payments on test sites</li>
                 </ul>
             </div>
+            
+            <!-- Debug Information -->
+            <div class="card">
+                <h2>Debug Information</h2>
+                <table class="form-table">
+                    <tr>
+                        <th>WooCommerce Version:</th>
+                        <td><?php echo defined('WC_VERSION') ? WC_VERSION : 'Not detected'; ?></td>
+                    </tr>
+                    <tr>
+                        <th>WCS Version:</th>
+                        <td><?php echo defined('WCS_VERSION') ? WCS_VERSION : 'Not detected'; ?></td>
+                    </tr>
+                    <tr>
+                        <th>WCS_Staging Class:</th>
+                        <td><?php echo class_exists('WCS_Staging') ? '✅ Available' : '❌ Not found'; ?></td>
+                    </tr>
+                    <tr>
+                        <th>Site URL:</th>
+                        <td><?php echo esc_html(get_site_url()); ?></td>
+                    </tr>
+                    <tr>
+                        <th>Home URL:</th>
+                        <td><?php echo esc_html(get_home_url()); ?></td>
+                    </tr>
+                </table>
+            </div>
         </div>
         <?php
     }
     
     public function handle_form_submission() {
+        // Check if this is our page and we have a form submission
+        if (!isset($_GET['page']) || $_GET['page'] !== 'wcs-staging-controller') {
+            return;
+        }
+        
         if (!isset($_POST['wcs_staging_nonce']) || !wp_verify_nonce($_POST['wcs_staging_nonce'], 'wcs_staging_control')) {
             return;
         }
         
         if (!current_user_can('manage_options')) {
-            return;
+            wp_die(__('You do not have sufficient permissions to access this page.'));
+        }
+        
+        if (!$this->is_wcs_active()) {
+            wp_die(__('WooCommerce Subscriptions is not active.'));
         }
         
         if (isset($_POST['action'])) {
@@ -168,7 +216,12 @@ class WCS_Staging_Controller {
         update_option('wc_subscriptions_siteurl', $site_url);
         delete_option('wcs_ignore_duplicate_siteurl_notice');
         
-        wp_redirect(admin_url('admin.php?page=wcs-staging-controller&mode=live'));
+        // Clear any caches that might interfere
+        if (function_exists('wp_cache_flush')) {
+            wp_cache_flush();
+        }
+        
+        wp_redirect(add_query_arg(array('mode' => 'live'), admin_url('admin.php?page=wcs-staging-controller')));
         exit;
     }
     
@@ -176,20 +229,45 @@ class WCS_Staging_Controller {
         // Set a different URL to trigger staging mode
         $parsed_url = parse_url(get_site_url());
         $host = isset($parsed_url['host']) ? $parsed_url['host'] : 'example.com';
+        
+        // Create a staging URL that's different from the current site
         $staging_url = 'https://staging.' . $host;
+        
+        // If current URL already contains staging, use different approach
+        if (strpos($host, 'staging') !== false) {
+            $staging_url = 'https://live.' . str_replace('staging.', '', $host);
+        }
+        
         update_option('wc_subscriptions_siteurl', $staging_url);
         
-        wp_redirect(admin_url('admin.php?page=wcs-staging-controller&mode=staging'));
+        // Clear any caches that might interfere
+        if (function_exists('wp_cache_flush')) {
+            wp_cache_flush();
+        }
+        
+        wp_redirect(add_query_arg(array('mode' => 'staging'), admin_url('admin.php?page=wcs-staging-controller')));
         exit;
     }
     
     private function update_url() {
         if (isset($_POST['new_url']) && !empty($_POST['new_url'])) {
             $new_url = esc_url_raw($_POST['new_url']);
+            
+            // Validate URL format
+            if (!filter_var($new_url, FILTER_VALIDATE_URL)) {
+                wp_redirect(add_query_arg(array('error' => 'invalid_url'), admin_url('admin.php?page=wcs-staging-controller')));
+                exit;
+            }
+            
             update_option('wc_subscriptions_siteurl', $new_url);
             delete_option('wcs_ignore_duplicate_siteurl_notice');
             
-            wp_redirect(admin_url('admin.php?page=wcs-staging-controller&updated=1'));
+            // Clear any caches that might interfere
+            if (function_exists('wp_cache_flush')) {
+                wp_cache_flush();
+            }
+            
+            wp_redirect(add_query_arg(array('updated' => '1'), admin_url('admin.php?page=wcs-staging-controller')));
             exit;
         }
     }
@@ -200,13 +278,28 @@ class WCS_Staging_Controller {
                 $message = ($_GET['mode'] === 'live') ? 
                     'Live mode enabled! Automatic payments are now active.' : 
                     'Staging mode enabled! Automatic payments are now disabled.';
-                echo '<div class="notice notice-success"><p>' . esc_html($message) . '</p></div>';
+                echo '<div class="notice notice-success is-dismissible"><p>' . esc_html($message) . '</p></div>';
             }
             
             if (isset($_GET['updated'])) {
-                echo '<div class="notice notice-success"><p>URL updated successfully!</p></div>';
+                echo '<div class="notice notice-success is-dismissible"><p>URL updated successfully!</p></div>';
+            }
+            
+            if (isset($_GET['error'])) {
+                $error_message = 'An error occurred.';
+                if ($_GET['error'] === 'invalid_url') {
+                    $error_message = 'Invalid URL format provided.';
+                }
+                echo '<div class="notice notice-error is-dismissible"><p>' . esc_html($error_message) . '</p></div>';
             }
         }
+    }
+    
+    /**
+     * Check if WooCommerce Subscriptions is active
+     */
+    private function is_wcs_active() {
+        return class_exists('WC_Subscriptions') || class_exists('WCS_Staging');
     }
 }
 
@@ -214,6 +307,17 @@ class WCS_Staging_Controller {
 function wcs_staging_controller_init() {
     if (class_exists('WooCommerce')) {
         new WCS_Staging_Controller();
+    } else {
+        // Show admin notice if WooCommerce is not active
+        add_action('admin_notices', 'wcs_staging_controller_wc_missing_notice');
     }
 }
+
+function wcs_staging_controller_wc_missing_notice() {
+    echo '<div class="notice notice-error"><p>';
+    echo '<strong>WooCommerce Subscriptions Staging Controller:</strong> ';
+    echo 'WooCommerce is required for this plugin to work.';
+    echo '</p></div>';
+}
+
 add_action('plugins_loaded', 'wcs_staging_controller_init');
