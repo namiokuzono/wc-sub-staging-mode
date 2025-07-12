@@ -33,6 +33,36 @@ class WCS_Staging_Controller {
         }
     }
     
+    private function repair_corrupted_url() {
+        try {
+            $site_url = get_site_url();
+            
+            // Clear the corrupted option completely
+            delete_option('wc_subscriptions_siteurl');
+            
+            // Set it to the current site URL (this will put it in live mode)
+            update_option('wc_subscriptions_siteurl', $site_url);
+            
+            // Also clear the notice option
+            delete_option('wcs_ignore_duplicate_siteurl_notice');
+            
+            // Clear any caches
+            if (function_exists('wp_cache_flush')) {
+                wp_cache_flush();
+            }
+            
+            $redirect_url = add_query_arg(
+                array('page' => 'wcs-staging-controller', 'repaired' => '1'),
+                admin_url('admin.php')
+            );
+            wp_redirect($redirect_url);
+            exit;
+        } catch (Exception $e) {
+            error_log('Repair URL Error: ' . $e->getMessage());
+            wp_die(esc_html__('Error repairing URL.'));
+        }
+    }
+    
     public function add_admin_menu() {
         try {
             add_submenu_page(
@@ -117,13 +147,33 @@ class WCS_Staging_Controller {
                     </tr>
                     <tr>
                         <th>Stored Subscriptions URL:</th>
-                        <td><?php echo esc_html($current_url ?: 'Not set'); ?></td>
+                        <td>
+                            <?php 
+                            echo esc_html($current_url ?: 'Not set'); 
+                            if (strpos($current_url, '[wc_subscriptions_siteurl]') !== false) {
+                                echo '<br><span style="color: red; font-weight: bold;">⚠️ CORRUPTED URL DETECTED!</span>';
+                            }
+                            ?>
+                        </td>
                     </tr>
                     <tr>
                         <th>URLs Match:</th>
                         <td><?php echo ($site_url === $current_url) ? '✅ Yes' : '❌ No'; ?></td>
                     </tr>
                 </table>
+                
+                <?php if (strpos($current_url, '[wc_subscriptions_siteurl]') !== false): ?>
+                <div style="background: #ffebee; padding: 15px; border-left: 4px solid #f44336; margin-top: 15px;">
+                    <h3>🔧 Corrupted URL Detected</h3>
+                    <p>The stored URL contains a placeholder token that wasn't replaced properly. This will cause issues with staging mode detection.</p>
+                    <form method="post" style="display: inline;">
+                        <?php wp_nonce_field('wcs_staging_control', 'wcs_staging_nonce'); ?>
+                        <input type="hidden" name="action" value="repair_url">
+                        <input type="submit" class="button button-secondary" value="🔧 Repair Corrupted URL" 
+                               onclick="return confirm('This will fix the corrupted URL by setting it to your current site URL. Continue?')">
+                    </form>
+                </div>
+                <?php endif; ?>
             </div>
             
             <!-- Staging Mode Controls -->
@@ -214,8 +264,27 @@ class WCS_Staging_Controller {
                         <td><?php echo esc_html(get_site_url()); ?></td>
                     </tr>
                     <tr>
-                        <th>Home URL:</th>
-                        <td><?php echo esc_html(get_home_url()); ?></td>
+                        <th>Raw Option Value:</th>
+                        <td>
+                            <code><?php echo esc_html(get_option('wc_subscriptions_siteurl', 'NOT_SET')); ?></code>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Option Status:</th>
+                        <td>
+                            <?php 
+                            $raw_option = get_option('wc_subscriptions_siteurl', '');
+                            if (empty($raw_option)) {
+                                echo '🔵 Not set';
+                            } elseif (strpos($raw_option, '[wc_subscriptions_siteurl]') !== false) {
+                                echo '🔴 Corrupted (contains placeholder)';
+                            } elseif (filter_var($raw_option, FILTER_VALIDATE_URL)) {
+                                echo '🟢 Valid URL';
+                            } else {
+                                echo '🟡 Invalid format';
+                            }
+                            ?>
+                        </td>
                     </tr>
                 </table>
             </div>
@@ -252,6 +321,9 @@ class WCS_Staging_Controller {
                         break;
                     case 'update_url':
                         $this->update_url();
+                        break;
+                    case 'repair_url':
+                        $this->repair_corrupted_url();
                         break;
                 }
             }
@@ -365,6 +437,10 @@ class WCS_Staging_Controller {
                 
                 if (isset($_GET['updated'])) {
                     echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('URL updated successfully!') . '</p></div>';
+                }
+                
+                if (isset($_GET['repaired'])) {
+                    echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('Corrupted URL has been repaired and set to live mode!') . '</p></div>';
                 }
                 
                 if (isset($_GET['error'])) {
