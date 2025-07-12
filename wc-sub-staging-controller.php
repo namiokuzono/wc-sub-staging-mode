@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Subscriptions Staging Controller
  * Description: Tool to check, fix, and control WooCommerce Subscriptions staging mode
- * Version: 1.1
+ * Version: 1.2
  * Author: Woo Nami
  */
 
@@ -31,9 +31,14 @@ class WCS_Staging_Controller {
     }
     
     public function admin_page() {
+        // Safe way to check if WCS_Staging class exists
+        $is_staging = false;
+        if (class_exists('WCS_Staging')) {
+            $is_staging = WCS_Staging::is_duplicate_site();
+        }
+        
         $current_url = get_option('wc_subscriptions_siteurl');
         $site_url = get_site_url();
-        $is_staging = WCS_Staging::is_duplicate_site();
         
         ?>
         <div class="wrap">
@@ -59,7 +64,7 @@ class WCS_Staging_Controller {
                     </tr>
                     <tr>
                         <th>Stored Subscriptions URL:</th>
-                        <td><?php echo esc_html($current_url); ?></td>
+                        <td><?php echo esc_html($current_url ?: 'Not set'); ?></td>
                     </tr>
                     <tr>
                         <th>URLs Match:</th>
@@ -120,31 +125,6 @@ class WCS_Staging_Controller {
                 </div>
             </div>
             
-            <!-- Testing Tools -->
-            <div class="card">
-                <h2>Testing Tools</h2>
-                <div style="background: #e7f3ff; padding: 15px; border-left: 4px solid #2196f3;">
-                    <h3>Simulate Different Scenarios</h3>
-                    <p>Test how the site behaves with different URLs:</p>
-                    
-                    <form method="post" style="display: inline-block; margin-right: 10px;">
-                        <?php wp_nonce_field('wcs_staging_control', 'wcs_staging_nonce'); ?>
-                        <input type="hidden" name="action" value="test_staging">
-                        <input type="hidden" name="test_url" value="https://staging.example.com">
-                        <input type="submit" class="button button-secondary" value="Test Staging URL" 
-                               onclick="return confirm('This will temporarily set a staging URL for testing')">
-                    </form>
-                    
-                    <form method="post" style="display: inline-block;">
-                        <?php wp_nonce_field('wcs_staging_control', 'wcs_staging_nonce'); ?>
-                        <input type="hidden" name="action" value="test_live">
-                        <input type="hidden" name="test_url" value="<?php echo esc_attr($site_url); ?>">
-                        <input type="submit" class="button button-secondary" value="Test Live URL" 
-                               onclick="return confirm('This will set the current site URL as live')">
-                    </form>
-                </div>
-            </div>
-            
             <!-- Information -->
             <div class="card">
                 <h2>How It Works</h2>
@@ -179,10 +159,6 @@ class WCS_Staging_Controller {
                 case 'update_url':
                     $this->update_url();
                     break;
-                case 'test_staging':
-                case 'test_live':
-                    $this->test_url();
-                    break;
             }
         }
     }
@@ -198,7 +174,9 @@ class WCS_Staging_Controller {
     
     private function enable_staging_mode() {
         // Set a different URL to trigger staging mode
-        $staging_url = 'https://staging.' . parse_url(get_site_url(), PHP_URL_HOST);
+        $parsed_url = parse_url(get_site_url());
+        $host = isset($parsed_url['host']) ? $parsed_url['host'] : 'example.com';
+        $staging_url = 'https://staging.' . $host;
         update_option('wc_subscriptions_siteurl', $staging_url);
         
         wp_redirect(admin_url('admin.php?page=wcs-staging-controller&mode=staging'));
@@ -216,17 +194,6 @@ class WCS_Staging_Controller {
         }
     }
     
-    private function test_url() {
-        if (isset($_POST['test_url']) && !empty($_POST['test_url'])) {
-            $test_url = esc_url_raw($_POST['test_url']);
-            update_option('wc_subscriptions_siteurl', $test_url);
-            delete_option('wcs_ignore_duplicate_siteurl_notice');
-            
-            wp_redirect(admin_url('admin.php?page=wcs-staging-controller&tested=1'));
-            exit;
-        }
-    }
-    
     public function show_admin_notices() {
         if (isset($_GET['page']) && $_GET['page'] === 'wcs-staging-controller') {
             if (isset($_GET['mode'])) {
@@ -239,13 +206,14 @@ class WCS_Staging_Controller {
             if (isset($_GET['updated'])) {
                 echo '<div class="notice notice-success"><p>URL updated successfully!</p></div>';
             }
-            
-            if (isset($_GET['tested'])) {
-                echo '<div class="notice notice-info"><p>Test URL applied. Check the status above.</p></div>';
-            }
         }
     }
 }
 
-// Initialize the plugin
-new WCS_Staging_Controller();
+// Initialize the plugin only if WooCommerce is active
+function wcs_staging_controller_init() {
+    if (class_exists('WooCommerce')) {
+        new WCS_Staging_Controller();
+    }
+}
+add_action('plugins_loaded', 'wcs_staging_controller_init');
